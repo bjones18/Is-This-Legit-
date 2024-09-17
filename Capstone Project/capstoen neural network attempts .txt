@@ -1,0 +1,112 @@
+capstoen neural network attempts 
+
+
+#----------------------------------------------------------
+#first attempt -> does not like the gg plot or to get the nn boundaries but has the least error rated model 
+#uggh!!!!!!
+set.seed(1234)
+get_nn_boundaries <- function(data, model){
+  x_range <- range(data$PC1, na.rm = TRUE)
+  y_range <- range(data$PC2, na.rm = TRUE)
+  
+  grid <- expand.grid(PC1=seq(from=x_range[1], to=x_range[2], length.out=200), 
+                      PC2=seq(from=y_range[1], to=y_range[2], length.out=200))
+  
+  grid$pred <- predict(model.nn, newdata=grid, decision.values=TRUE)
+  grid$pred_numeric <- as.numeric(grid$pred) 
+  return(grid)
+}
+
+model.nn <- neuralnet(scam~ PC1+PC2, 
+                      data = d.oversampled, 
+                      hidden = 10,
+                      linear.output = FALSE,#reminder: true for regression, false for classification 
+                      threshold = 0.1)  
+
+d.nn.decision.boundary <- get_nn_boundaries(data = d.oversampled, model = model.nnn) 
+#error: Error in `$<-.data.frame`(`*tmp*`, "pred_numeric", value = c(0.999999999570875, : replacement has 80000 rows, data has 40000 -> figure out how to fix 
+
+plot(model.nn)
+
+
+#Now we train the model 
+train_nn_ind <- createDataPartition(d.oversampled$scam, p = .9, list = FALSE, times = 1)
+# Splitting data for train and test
+data_nn_train <- d.oversampled[ train_nn_ind,]
+data_nn_test  <- d.oversampled[-train_nn_ind,]
+
+set.seed(1234) 
+model.nn <- neuralnet(scam~ PC1+PC2, 
+                      data = data_nn_train, 
+                      hidden = 10,
+                      linear.output = FALSE,#reminder: true for regression, false for classification 
+                      threshold = 0.1)  
+
+predictions.nn <- predict(model.nn, data_nn_test, probability = TRUE)
+
+levels(data_nn_test$scam) #only 2 fudge
+levels(predictions.nn) # null 
+confusionMatrix(data_nn_test$scam, predictions.nn)
+
+
+#----------------------------------------------------------
+#3rd attempt 
+x_axis<- d.oversampled[, -c("scam")]
+y_axis <- d.oversampled$scam
+
+#split data 
+set.seed(1234)
+nn_ind <- sample(1:nrow(d.oversampled), 0.5* nrow(d.oversampled))
+nn_train <- d.oversampled[nn_ind, ]
+nn_test <- d.oversampled[-nn_ind, ]
+
+nn.model <- neuralnet(scam~ PC1 +PC2, data = nn_train, hidden = c(5, 3), linear.output = FALSE)
+#predictions 
+predictions.nn <- predict(nn.model, nn_test)
+
+
+#-------------------------------------------------------------------------
+#3rd
+library(neuralnet)
+library(caret)
+
+# Function to generate decision boundaries for neural network model
+get_nn_boundaries <- function(data, model){
+  x_range <- range(data$PC1, na.rm = TRUE)
+  y_range <- range(data$PC2, na.rm = TRUE)
+  
+  grid <- expand.grid(PC1=seq(from=x_range[1], to=x_range[2], length.out=200), 
+                      PC2=seq(from=y_range[1], to=y_range[2], length.out=200))
+  
+  grid$pred <- predict(model, newdata=grid)
+  return(grid)
+}
+
+# Train-test split
+set.seed(1234)
+train_ind <- createDataPartition(d.oversampled$scam, p = .9, list = FALSE, times = 1)
+data_train <- d.oversampled[train_ind,]
+data_test <- d.oversampled[-train_ind,]
+
+# Train the neural network model
+set.seed(1234)
+model_nn <- neuralnet(
+  scam ~ PC1 + PC2,  # Adjust predictors as needed
+  data = data_train,
+  hidden = c(5,2),  # Adjust number of hidden neurons as needed
+  linear.output = FALSE  # Use non-linear activation function for output
+)
+plot(model_nn)
+# Generate decision boundaries for the neural network model
+nn_decision_boundary <- get_nn_boundaries(data = d.oversampled, model = model_nn)
+
+# Plot the data and decision boundaries
+ggplot(data = d.oversampled, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = scam), alpha = .2) +
+  geom_contour(data = nn_decision_boundary, aes(x = PC1, y = PC2, z = pred), bins = 1)
+
+# Make predictions on test data
+predictions_nn <- predict(model_nn, data_test)
+
+confusionMatrix(data_test$scam, predictions.nn)
+#----------------------------------------------------------------------------------------------

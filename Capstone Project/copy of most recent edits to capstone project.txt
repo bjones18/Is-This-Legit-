@@ -1,0 +1,566 @@
+---
+title: Capstone Project 
+output: html_document
+date: "2024-03-29" -"2024-04-16" 
+---
+
+The goal for this project is to just try and get a website out of this 
+W2 - get data, process it, get it ready for the ml models 
+w3- Ml models 
+w4-5- hopefully get a website running 
+
+SO, we will have two data sets:
+1. Urls 
+2. TEXT 
+
+okay: phishing scams -> sense of urgency and fear, ask for credentials or validate, have a higher rate of misspelling  ->
+
+freaking good luck girl!
+```{r}
+if (!require("pacman")) install.packages("pacman")
+if (!require("pacman")) install.packages("pacman")
+if (!require("remotes")) install.packages("remotes")
+if (!require("parttree")) remotes::install_github("grantmcdermott/parttree")
+p_load(data.table, dplyr, tidyr, stringr, plyr, ggplot2, stringi, ggpubr, lubridate, caret) # Packages for text mining
+p_load(rpart,rpart.plot, tree, parttree, rminer, beepr, class, ggdendro,e1071)
+p_load(parsnip)
+
+
+theme_set(theme_pubr(border = TRUE))
+# Useful Extra functions
+`%+%` <- function(x,y){paste0(x,y)} # Concatenate strings
+`%gic%` <- function(x,y){grepl(x, y, ignore.case = TRUE)} # Pattern in a string
+substrRight <- function(x, n){substr(x, nchar(x)-n+1, nchar(x))}
+# Global option to make our default graphics good looking 
+theme_set(theme_pubr(border = TRUE))
+```
+
+First things first, gotta download the data 
+
+**Aggregate Email Dataset** 
+```{r}
+# Load data
+#can we automate this with inspector to recieve new data? -> future question after successful 
+d.mal.emails  <- fread("phish_email.csv", fill = T)
+d.mal.emails$scam_flag <- "1"
+
+#Combine email_subject and email_text bc i cant be bothered going in one at a time -> will remove and adjust later
+d.mal.emails$email_text <- paste(d.mal.emails$email_subject, d.mal.emails$email_text)
+d.mal.emails <- subset(d.mal.emails, select = -email_subject)
+
+#remove \n and \r
+d.mal.emails$email_text <- gsub("\"", "", d.mal.emails$email_text)
+d.mal.emails$email_text <- gsub("\n|\t|\r", " ", d.mal.emails$email_text)
+
+
+find_mal_urls<-function(text){
+  words <- unlist(strsplit(text, "\\s+"))
+  urls <- words[nchar(words) > 14]
+  return(paste(urls, collapse = ", "))
+}
+d.mal.emails[, urls_in_text := sapply(email_text, find_mal_urls)]
+
+#preprocess the data, make feature extraction, etc. 
+#length of the text
+d.mal.emails[, email_length_chars := nchar(email_text)]
+d.mal.emails[, word_count := str_count(email_text, fixed(" "))]
+
+
+#load data for legit email_texts 
+d.legit.emails <- fread("legit_emails.csv", fill = T)
+d.legit.emails$scam_flag <- "0"
+
+#Combine email_subject and email_text bc i cant be bothered going in one at a time -> will remove and adjust later
+d.legit.emails$email_text <- paste(d.legit.emails$email_subject, d.legit.emails$email_text)
+d.legit.emails <- subset(d.legit.emails, select = -email_subject)
+
+#removing the weird ""
+d.legit.emails$email_text <- gsub("\"", "", d.legit.emails$email_text)
+d.legit.emails$email_text <- gsub("\n|\t|\r", " ", d.legit.emails$email_text)
+
+#adding Urls to a new col -> need to learn how to remove urls from the og text 
+find_leg_urls<-function(text){
+  words <- unlist(strsplit(text, "\\s+"))
+  urls <- words[nchar(words) > 18]
+  return(paste(urls, collapse = ", "))
+}
+d.legit.emails[, urls_in_text := sapply(email_text, find_leg_urls)]
+
+
+#preprocess data: ID length of email_text 
+d.legit.emails[, email_length_chars := nchar(email_text)]
+d.legit.emails[, word_count := str_count(email_text, fixed(" "))]
+
+#combine into one dataset 
+d.emails <- rbind(d.mal.emails, d.legit.emails)
+
+```
+
+
+
+**Emotion Analysis**
+```{r}
+#sentiment analysis -> PCA and one hot encoding-> everything done in W12 zip
+#usegraphs
+p_load(syuzhet)
+
+# Function to get sentiment scores
+
+get_sentiment_score <- function(text) {
+  sentiment <- get_sentiment(text, method = "syuzhet")
+  return(sentiment)
+}
+
+# Calculate sentiment scores for each blog post
+d.emails[, sentiment_score := sapply(email_text, get_sentiment_score)]
+
+#extracting the dominant emotion from the text 
+ext <- d.emails$email_text[1]
+get_dominant_emotion <- function(text) {
+  emotions <- get_nrc_sentiment(text)
+  dominant_emotion <- names(which.max(colSums(emotions)))
+  return(dominant_emotion)
+}
+
+d.emails[, dominant_emotion := sapply(email_text, get_dominant_emotion)]
+
+#what about fear 
+get_fear_score <- function(text) {
+  emotions <- get_nrc_sentiment(text)
+  fear_score <- emotions$fear
+  return(fear_score)
+}
+d.emails[, fear_score := sapply(email_text, get_fear_score)]
+
+#what about aggressiveness -> START HERE
+#phishing scams are hard to find based on emotion because they can come off as positive -> catch more with honey than the stick 
+#aggression -> combine fear + anger 
+get_agg_score <- function(text) {
+  emotions <- get_nrc_sentiment(text)
+  anger_score <- emotions$anger
+  fear_score <- emotions$fear
+  agg_score<- anger_score+fear_score
+  return(agg_score)
+}
+d.emails[, agg_score := sapply(email_text, get_agg_score)]
+
+#negative anticipation or negative trust? 
+get_neg_ant_score <- function(text) {
+  emotions <- get_nrc_sentiment(text)
+  neg_score <- emotions$negative
+  ant_score <- emotions$anticipation
+  neg_ant_score<- neg_score+ant_score
+  return(neg_ant_score)
+}
+d.emails[, neg_ant_score := sapply(email_text, get_neg_ant_score)]
+
+get_pos_ant_score <- function(text) {
+  emotions <- get_nrc_sentiment(text)
+  pos_score <- emotions$positive
+  ant_score <- emotions$anticipation
+  pos_ant_score<- pos_score+ant_score
+  return(pos_ant_score)
+}
+d.emails[, pos_ant_score := sapply(email_text, get_pos_ant_score)]
+#seems like overall it seems that the main difference between phishing and legit is that there is a greater distance between negative anticipation and positive anticipation  
+```
+
+
+********COME BACK TO THIS**********REMOVE urls FROM TEXT, SIMPLIFY TEXT
+#get spelling count -> how many words are misspelled (url may interfere)
+#use hunspell -> split the text into individual works and use hunspell_check to check for any misspelled words
+```{r}
+#check the frequency of misspelled words -> poor grammar 
+p_load(hunspell) #checks for misspelled words 
+
+spelling_check <- function(text) {
+  words<- unlist(strsplit(text,"\\s+"))
+  misspelled_freq <- sum(!sapply(words, hunspell_check))
+  return(misspelled_freq)
+}
+d.emails[, misspelled_freq := sapply(email_text, spelling_check)]
+
+
+#ratio between misspelled words and word count -> see if there is anything significant between the two 
+d.emails$misspelled_ratio <- d.emails$misspelled_freq / d.emails$word_count
+
+#plot the data -> shows 
+ggplot(d.emails, aes(x=scam_flag, y = misspelled_ratio, fill = scam_flag)) +
+  geom_bar(stat = "identity")+
+  labs(x = "Phising Flag", y = "Misspelled words by word count") +
+  ggtitle("Misspelled word ratio accross phising and non-phising scams")
+
+ggplot(d.emails, aes(x=scam_flag, y = sentiment_score, fill = scam_flag)) +
+  geom_boxplot()+
+  labs(x = "Phising Flag", y = "sentiment score") +
+  ggtitle("Emotions across phising and non-phising scams")
+
+
+ggplot(d.emails, aes(x = dominant_emotion, y= sentiment_score, col = scam_flag)) +
+  geom_boxplot()+
+  labs(x = "dominant emotion", y = "sentiment score") +
+  ggtitle("Emotions across phising and non-phising scams")+
+  scale_y_continuous(limits = c(0, 20))
+#may add more graphs to compare individual emotional scores like fear, aggression, psoitive and negative anticpation -> maybe just go and aggregate the data to the mean dominant emotion
+
+```
+
+^^note that the ratio between misspelled/words total is bigger compared to legit emails^^^
+
+**Content Analysis**
+counting words and frequencies 
+```{r}
+#using d.emails dataset
+d.emails[,v6:=TRUE]
+d.text <- d.emails[,1:10] 
+d.text <- d.emails[,.(email_text,scam_flag)]
+
+p_load(tidytext)
+# Create Post-Level ID to trace back results to the initial dataset
+d.text[,row:=1:nrow(d.text)]
+# From text to words
+d.agg.txt <- d.text %>% unnest_tokens(word, email_text)
+d.agg.txt <- d.agg.txt[,.(freq=.N), by= .(scam_flag, word)]
+
+#*I have to remnove the url and put it in a separate column *# -> may have to change the number from 3 to 5 or smthing 
+d.agg.txt <- d.agg.txt[nchar(word) > 5, ]
+# count frequences by period
+d.agg.txt <- d.agg.txt[,.(freq=sum(freq)),by=.(word,scam_flag)]
+# sort by period and frequency
+d.agg.txt <- d.agg.txt[order(scam_flag,-freq),]
+
+# Top words for malicious 
+top_words_mal <- d.agg.txt[scam_flag == "1",][1:20,]
+# Top words for legit 
+top_words_leg <- d.agg.txt[scam_flag == "0",][1:20,]
+
+#head(d.agg.txt)
+
+#something like this:
+#d.agg <- d[, .(fear_score_agg = mean(fear_score)), by = .(DateOfPost, PhotoIdentified)]
+#ggplot(d.agg, aes(x = DateOfPost, y = fear_score_agg, col = PhotoIdentified)) +
+ # geom_point()+ 
+  #geom_line() +
+  #geom_vline(xintercept = event_date) 
+
+
+```
+
+
+**Machine Learning** 
+geting to the good stuff -> may be slightly different 
+
+**STM Model**
+```{r}
+
+p_load(tm, stm)
+processed <- textProcessor(d.emails$email_text)
+out <- prepDocuments(processed$documents, processed$vocab, processed$meta)
+
+docs <- out$documents
+vocab <- out$vocab
+meta <- out$meta
+
+# Fit the STM model
+K <- 5  # Number of topics
+stm_model <- stm(documents = docs, vocab = vocab, K = K, data = meta, max.em.its = 1000)
+
+# Plotting the results
+plot(stm_model)
+
+# For more insights:
+labelTopics(stm_model)
+
+plot(stm_model, type = "hist")
+
+
+#distribution of topics by scam email 
+processed <- textProcessor(d.mal.emails$email_text)
+out <- prepDocuments(processed$documents, processed$vocab, processed$meta)
+
+docs <- out$documents
+vocab <- out$vocab
+meta <- out$meta
+
+# Fit the STM model
+K <- 5  # Number of topics
+stm_mal_model <- stm(documents = docs, vocab = vocab, K = K, data = meta, max.em.its = 1000)
+
+# Plotting the results
+plot(stm_mal_model)
+
+#doing the same but focus on legit emails 
+processed <- textProcessor(d.legit.emails$email_text)
+out <- prepDocuments(processed$documents, processed$vocab, processed$meta)
+
+docs <- out$documents
+vocab <- out$vocab
+meta <- out$meta
+
+# Fit the STM model
+K <- 5  # Number of topics
+stm_leg_model <- stm(documents = docs, vocab = vocab, K = K, data = meta, max.em.its = 1000)
+
+# Plotting the results
+plot(stm_leg_model)
+
+```
+
+
+#SVM and NN USE or use SVM and comapre it to- the STM
+```{r}
+#One-hot encoding and PCA
+d.emails <- subset(d.emails, select = -v6)
+d.emails[,scam_flag := as.factor(scam_flag)]
+
+# First we split columns into those that are numeric from the beginning
+d.numeric.variables <- c('email_length_chars', 'word_count', 'sentiment_score', 'fear_score', 'neg_ant_score', 'pos_ant_score', 'misspelled_freq', 'misspelled_ratio')
+
+d.factor.variables <- c('email_text', 'urls_in_text', 'dominant_emotion')
+# Next we perform one-hot encoding ONLY FOR FACTOR VARIABLES
+dummy <- dummyVars(" ~ .", data=d.emails[,d.factor.variables, with = F])
+
+d.for.pca.factors <- data.frame(predict(dummy, newdata = d.emails)) 
+d.for.pca.numeric<- d.emails[,d.numeric.variables, with = F] 
+
+# Finally, we bind old numeric variables with the new ones
+d.emails.new <- cbind(d.for.pca.factors, d.for.pca.numeric)
+
+#use PCA to compress the data 
+pca.res <- prcomp(d.emails.new, center = TRUE, scale = TRUE)
+pca.res<- pca.res$x[,1:2]
+pca.res <- as.data.table(pca.res)
+pca.res[,scam := d.emails$scam_flag]
+
+#graph to see how the data looks
+ggplot(data = pca.res, 
+      aes(x = PC1, y = PC2, col = scam, shape = scam)) +
+			geom_point(size = 3, alpha = 1) +
+	    scale_shape_manual(values=c(3,15))
+
+
+
+```
+
+**SVM Machine Learning Model**
+```{r}
+
+set.seed(123)
+#oversample the scam emails for more accurate predictiopn 
+d.illlegitimate <- pca.res[scam == 1,]
+d.index <- 1:nrow(d.illlegitimate) # vector to sample from
+sample.index <- sample(d.index, 398,replace = T) # sampled observations index
+sample.index[1:10]
+# Subset illegitimate transactions with oversampled dataset
+d.illlegitimate <- d.illlegitimate[sample.index]
+# Subset legitimate transactions without sampling
+d.legitimate <- pca.res[scam == 0,]
+# Bind oversampled fraud transactions with legitimate transactions
+d.oversampled <- list(d.illlegitimate, d.legitimate) %>% rbindlist()
+
+ggplot(data = d.oversampled, aes(x=PC1, y=PC2, col = scam)) +
+		geom_jitter(alpha=0.1, shape = 4, width = 0.1, height = 0.1)
+
+
+#SVM 
+#create the model and boundaries 
+get_svm_boundaries <- function(data, model){
+  x_range <- range(data$PC1, na.rm = TRUE)
+  y_range <- range(data$PC2, na.rm = TRUE)
+  
+  grid <- expand.grid(PC1=seq(from=x_range[1], to=x_range[2], length.out=200), 
+                      PC2=seq(from=y_range[1], to=y_range[2], length.out=200))
+  
+  grid$pred <- predict(model.svm, newdata=grid, decision.values=TRUE)
+  grid$pred_numeric <- as.numeric(grid$pred) 
+  return(grid)
+}
+
+set.seed(1234)
+model.svm <- svm(scam ~ ., data = d.oversampled)
+d.svm.decision.boundary <- get_svm_boundaries(data = d.oversampled, model = model.svm) 
+
+ggplot(d.oversampled, aes(x=PC1, y=PC2)) +
+  geom_point(aes(color=scam), alpha = .2) + 
+  geom_contour(data=d.svm.decision.boundary, aes(x=PC1, y=PC2, z=as.numeric(pred)), bins=1)
+
+#Now we train the model 
+train_ind <- createDataPartition(d.oversampled$scam, p = .9, list = FALSE, times = 1)
+# Splitting data for train and test
+data_train <- d.oversampled[ train_ind,]
+data_test  <- d.oversampled[-train_ind,]
+
+set.seed(1234) 
+model.svm <- svm(scam~., data = data_train, probability = TRUE)
+predictions.svm <- predict(model.svm, data_test, probability = TRUE)
+
+confusionMatrix(data_test$scam, predictions.svm)
+#results show a lower accuracy than desired- 87.93, but as professor mentioned, it is the balanced accuracy which we must atune for - 92.39
+#much better than the not oversampled model
+
+```
+
+Neural Network Model
+```{r}
+#basic neural network 
+library(tidyverse)
+library(neuralnet)
+p_load(pROC) 
+
+
+#for the sake of getting this as accurate as possible, had to revert back to pca.res since it is a balanced dataset * will have to check my SVM to see which is more accurate, oversampled or balanced accuracy 
+
+set.seed(1234)
+#reminder: true for regression, false for classification 
+model.nn <- neuralnet(scam~ PC1+PC2, 
+                      data = pca.res, 
+                         hidden = c(15,3),
+                      linear.output = FALSE,
+                      threshold = 0.1)
+
+plot(model.nn) #plot the mapping 
+
+pred.nn <- predict(model.nn, data_test) #predict on test-> train the data 
+
+pred <- predict(model.nn, data_test)
+labels <- c("PC1", "PC2", "scam")
+prediction_label <- data.frame(max.col(pred)) %>% mutate(pred = labels[max.col.pred.]) %>% select(2) %>% unlist()
+table(data_test$scam, prediction_label)
+
+check = as.numeric(data_test$scam) == max.col(pred)
+accuracy = (sum(check)/nrow(data_test)) * 100
+print(accuracy) #94.82% accuracy 
+
+
+# create ROC-plots to check the performance of the model -> doing pretty well 
+#its not randomly predicting 
+
+pred.nn.subset <- pred.nn[1:length(data_test$scam)] #ensure the lengths are the same
+
+roc.nn <- roc(response = data_test$scam,
+                 predictor = as.integer(pred.nn.subset)
+                 )
+
+plot(roc.nn) # testing for more accuracy 
+
+aucModel2 <- auc(roc.nn)
+#using ROC to verify the balance and accuracy of the models themselves 
+```
+
+
+
+**User Input and prediction**
+
+Putting it all together 
+#call functions 
+#this is where I will layer the two models together for greater probability -> please freaking work bro -> function call YAY!!
+
+#function to process user input -> ie remove /r/t, etc. get word count, etc. 
+#spell check
+#sentiment analysis
+# function that layers the predict models 
+```{r}
+#This will be where the user inputs their email, set user with scam flag ?, predict where it falls, return result
+#gotta clean up my functions 
+
+d.user.input <- data.table(email_text = as.character())
+user.input <- edit("", title = "Please enter the email you want us to check: ")
+new_entry <- data.table(email_text = user.input)
+d.user.input <- rbind(d.user.input, new_entry)
+d.user.input$scam_flag <- "?"
+#remove crap
+d.user.input$email_text <- gsub("\"", "", d.user.input$email_text) #literally put this clean up process into a freaking function 
+d.user.input$email_text <- gsub("\n|\t|\r", " ", d.user.input$email_text)
+
+#extract URLS, length, and number of words (*building teh dataset itself*)
+d.user.input[, urls_in_text := sapply(email_text, find_leg_urls)]
+d.user.input[, email_length_chars := nchar(email_text)]
+d.user.input[, word_count := str_count(email_text, fixed(" "))]
+
+#get sentiment
+d.user.input[, sentiment_score := sapply(email_text, get_sentiment_score)]
+d.user.input[, dominant_emotion := sapply(email_text, get_dominant_emotion)]
+d.user.input[, fear_score := sapply(email_text, get_fear_score)]
+d.user.input[, agg_score := sapply(email_text, get_agg_score)]
+d.user.input[, neg_ant_score := sapply(email_text, get_neg_ant_score)]
+d.user.input[, pos_ant_score := sapply(email_text, get_pos_ant_score)]
+
+#checking misspelled words
+d.user.input[, misspelled_freq := sapply(email_text, spelling_check)]
+#ratio
+d.user.input$misspelled_ratio <- d.user.input$misspelled_freq / d.user.input$word_count
+
+#need to get main topic ideas by turning the STM into a function _> start here 
+predict(stm_mal_model, d.user.input)
+
+#conduct one-hot encooding and PCA 
+d.user.input[,scam_flag := as.factor(scam_flag)]
+
+# First we split columns into those that are numeric from the beginning
+d.numeric.variables <- c('email_length_chars', 'word_count', 'sentiment_score', 'fear_score', 'neg_ant_score', 'pos_ant_score', 'misspelled_freq', 'misspelled_ratio')
+
+d.factor.variables <- c('email_text', 'urls_in_text', 'dominant_emotion')
+# Next we perform one-hot encoding ONLY FOR FACTOR VARIABLES
+dummy <- dummyVars(" ~ .", data=d.user.input[,d.factor.variables, with = F])
+
+d.for.pca.factors <- data.frame(predict(dummy, newdata = d.user.input)) 
+d.for.pca.numeric<- d.user.input[,d.numeric.variables, with = F] 
+
+
+# Finally, we bind old numeric variables with the new ones
+d.user.input.m <- cbind(d.for.pca.factors, d.for.pca.numeric)
+#use PCA to compress the data 
+pca.res.user <- prcomp(d.user.input.m , center = TRUE, scale = TRUE)
+pca.res.user<- pca.res.user$x[,1:2]
+pca.res.user <- as.data.table(pca.res.user)
+pca.res.user[,scam := d.user.input$scam_flag]
+
+
+
+#what I want is -> the sentiment (dominant emotions), topic (sumamry of words), and if this is a scam (layer ML models )
+#model prediction
+
+predict.svm.user <- predict(model.svm, pca.res.user, probability = TRUE)
+predict.nn.user <- predict(model.nn, pca.res.user)
+combined_predictions <- data.frame(predict.svm.user, predict.nn.user)
+print(combined_predictions)
+
+
+#make sure it's in a dataset 
+# call prediction 
+```
+
+Then we launch this to a server -> how in the world? No idea, but we are here to find out 
+**Launch Server**
+```{r}
+#need major edits
+library(shiny)
+
+ui <- fluidPage(
+  titlePanel("Should I read this?"),
+  sidebarLayout(
+    sidebarPanel(
+      textInput("email_text", "Please enter the email you want us to check:", ""),
+      actionButton("predict", "Predict")
+    ),
+    mainPanel(
+      textOutput("prediction")
+    )
+  )
+)
+
+server <- function(input, output){
+  model <- load("")  # Need a function to load my trained model
+  
+  prediction <- eventReactive(input$predict, {
+    predict_email(input$news_text, model)  # need a function to make predictions called predict_news
+  })
+  
+  output$prediction <- renderText({
+    prediction()
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
